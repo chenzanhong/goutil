@@ -1,4 +1,4 @@
-package goutil
+package jwtx
 
 import (
 	"errors"
@@ -25,6 +25,7 @@ func GetDefaultSigningMethod() jwt.SigningMethod {
 /*
 Claims 示例结构体，原型。
 推荐用户自定义Claims。如：
+
 	claims := &model.MyClaims{
 		UserID:   123,
 		Username: "username",
@@ -35,8 +36,9 @@ Claims 示例结构体，原型。
 			Issuer:    "myapp",
 		},
 	}
-		
+
 然后使用 SignToken 生成 token
+
 	token, err := jwtUtil.SignToken(claims)
 
 注意：有 jwt:"set"（默认以字段名为key）或 jwt:"set=custom_key"（以custom_key为key）的字段
