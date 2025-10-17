@@ -2,8 +2,7 @@ package email
 
 import (
 	"crypto/tls"
-	"errors"
-	"log"
+	"fmt"
 	"strings"
 
 	"gopkg.in/gomail.v2"
@@ -21,16 +20,12 @@ func SendEmail(fromEmail, fromPwd, toEmail, smtpServerHost string, smtpServerPor
 	d.TLSConfig = &tls.Config{InsecureSkipVerify: true} // 跳过证书验证，生产环境中应谨慎使用
 
 	if err := d.DialAndSend(m); err != nil {
-		log.Printf("发送邮件失败: %v", err)
 		if strings.Contains(err.Error(), "535") { // 检查错误消息中是否包含 SMTP 身份验证失败的代码
-			log.Printf("可能是 SMTP 身份验证错误")
-			return errors.New("发送邮件失败可能是 SMTP 身份验证错误")
+			return fmt.Errorf("发送邮件失败，可能是 SMTP 身份验证错误: %v", err)
 		} else if strings.Contains(err.Error(), "connection refused") {
-			log.Printf("SMTP 服务器连接被拒绝")
-			return errors.New("发送邮件失败：SMTP 服务器连接被拒绝")
+			return fmt.Errorf("发送邮件失败，SMTP 服务器连接被拒绝: %v", err)
 		}
 		return err
 	}
-	log.Println("邮件发送成功")
 	return nil
 }
