@@ -5,7 +5,7 @@
 
 ## 📦 当前功能
 
-### ✅ JWT 认证助手（Gin + jwt-go）
+### JWT 认证助手（Gin + jwt-go）
 
 为 Gin 框架量身打造的 JWT 工具，简化认证流程。
 
@@ -55,7 +55,7 @@ func ProfileHandler(c *gin.Context) {
 
 ---
 
-### ✅ 动态路径解析器 `JoinPathFromCaller`
+### 动态路径解析器 `JoinPathFromCaller`
 
 根据**调用文件的位置**，动态构建项目内文件的绝对路径。
 
@@ -73,11 +73,11 @@ path, err := goutil.JoinPathFromCaller("..", "config", "db.yaml")
 // 结果: /your-project/config/db.yaml
 ```
 
-> ✅ 无论从哪个目录启动程序，路径都正确！
+>  无论从哪个目录启动程序，路径都正确！
 
 ---
 
-### ✅ 邮件发送工具
+### 邮件发送工具
 
 提供简单易用的邮件发送功能，支持HTML格式内容。
 
@@ -108,7 +108,7 @@ if err != nil {
 
 ---
 
-### ✅ 验证码生成工具
+### 验证码生成工具
 
 - 生成指定长度和字符集的随机字符串
 - 支持自定义种子的随机字符串生成
@@ -129,7 +129,7 @@ token := randx.GenerateRandomTokenWithSeed(10, "abcdefghijklmnopqrstuvwxyz", tim
 
 ---
 
-### ✅ 正则表达式验证工具
+### 正则表达式验证工具
 
 提供常用的正则表达式验证功能，简化数据校验。
 
@@ -149,7 +149,7 @@ if regexx.IsValidEmail("test@example.com") {
 
 ---
 
-### ✅ SSH/SFTP 文件传输工具
+### SSH/SFTP 文件传输工具
 
 提供基于SSH/SFTP的文件上传和下载功能。
 
@@ -193,7 +193,7 @@ if err != nil {
 
 ---
 
-### ✅ 高性能日志工具
+### 高性能日志工具
 
 基于Uber的zap日志库，提供高性能、结构化的日志记录功能。
 
@@ -243,7 +243,7 @@ logger, _ := logx.SetupZapLogger("app.log", zapcore.InfoLevel, logx.RotateConfig
 
 ---
 
-### ✅ 定时任务工具
+###  定时任务工具
 
 提供简单的定时任务执行功能。
 
