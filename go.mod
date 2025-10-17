@@ -1,4 +1,4 @@
-module go-util
+module goutil
 
 go 1.23.0
 
