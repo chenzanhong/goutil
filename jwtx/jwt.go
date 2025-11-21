@@ -35,11 +35,37 @@ var (
 type ErrorType = error
 
 var (
-	ErrTokenExpired     ErrorType = jwt.ErrTokenExpired
-	ErrTokenNotValidYet ErrorType = jwt.ErrTokenNotValidYet
-	ErrTokenMalformed   ErrorType = jwt.ErrTokenMalformed
-	ErrInvalidKey       ErrorType = jwt.ErrInvalidKey
-	ErrInvalidKeyType   ErrorType = jwt.ErrInvalidKeyType
+	ErrClaimsInvalid ErrorType = errors.New("claims must be a struct or pointer to struct")
+	ErrSigningMethod ErrorType = errors.New("unexpected signing method")
+	ErrInvalidKey              = jwt.ErrInvalidKey
+	// ErrTokenNotValidYet                    = jwt.ErrTokenNotValidYet
+	// ErrInvalidKeyType                      = jwt.ErrInvalidKeyType
+	// ErrHashUnavailable                     = jwt.ErrHashUnavailable
+	// ErrTokenMalformed                      = jwt.ErrTokenMalformed
+	// ErrTokenUnverifiable                   = jwt.ErrTokenUnverifiable
+	// ErrTokenSignatureInvalid               = jwt.ErrTokenSignatureInvalid
+	// ErrTokenRequiredClaimMissing           = jwt.ErrTokenRequiredClaimMissing
+	// ErrTokenInvalidAudience                = jwt.ErrTokenInvalidAudience
+	// ErrTokenExpired                        = jwt.ErrTokenExpired
+	// ErrTokenUsedBeforeIssued               = jwt.ErrTokenUsedBeforeIssued
+	// ErrTokenInvalidIssuer                  = jwt.ErrTokenInvalidIssuer
+	// ErrTokenInvalidSubject                 = jwt.ErrTokenInvalidSubject
+	// ErrTokenInvalidId                      = jwt.ErrTokenInvalidId
+	// ErrTokenInvalidClaims                  = jwt.ErrTokenInvalidClaims
+	// ErrInvalidType                         = jwt.ErrInvalidType
+)
+
+// === 标准化的错误码常量 ===
+const (
+	ErrorCodeMissingToken   = "missing_token"
+	ErrorCodeInvalidFormat  = "invalid_token_format"
+	ErrorCodeTokenExpired   = "token_expired"
+	ErrorCodeTokenNotActive = "token_not_active"
+	ErrorCodeTokenMalformed = "token_malformed"
+	ErrorCodeInvalidKey     = "invalid_key"
+	ErrorCodeInvalidKeyType = "invalid_key_type"
+	ErrorCodeTokenInvalid   = "token_invalid"
+	ErrorCodeInternalError  = "internal_error"
 )
 
 // Claims is an example claims structure.
@@ -152,7 +178,7 @@ func mustDefault() *GinJWT {
 // The claims parameter should be a pointer to a zero-value struct (e.g., &MyClaims{}).
 func NewGinJWT(key string, method SigningMethod, claims Claims, opts ...Option) (*GinJWT, error) {
 	if key == "" {
-		return nil, errors.New("key cannot be empty")
+		return nil, ErrInvalidKey
 	}
 	// 生产环境应该检查key长度是否符合要求
 	// if strings.HasPrefix(defaultGJWT.SigningMethod.Alg(), "HS") {
@@ -162,7 +188,7 @@ func NewGinJWT(key string, method SigningMethod, claims Claims, opts ...Option) 
 	// 	}
 	// }
 	if claims == nil {
-		return nil, errors.New("claims cannot be nil")
+		return nil, ErrClaimsInvalid
 	}
 	g := &GinJWT{
 		JWTKey:        []byte(key),
@@ -206,7 +232,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "missing_token",
+				"error":   ErrorCodeMissingToken,
 				"message": "请求头中缺少 Token",
 			})
 			c.Abort()
@@ -216,7 +242,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 		const bearerPrefix = "Bearer "
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "invalid_token_format",
+				"error":   ErrorCodeTokenMalformed,
 				"message": "Token 格式错误，缺少 Bearer 前缀",
 			})
 			c.Abort()
@@ -232,7 +258,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 		}
 		if claimsType.Kind() != reflect.Struct {
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error":   "internal_error",
+				"error":   ErrorCodeInternalError,
 				"message": "Claims must be a struct or pointer to struct",
 			})
 			c.Abort()
@@ -242,25 +268,25 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 		claims := g.claimsFactory()
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 			if t.Method != g.SigningMethod {
-				return nil, errors.New("unexpected signing method")
+				return nil, ErrSigningMethod
 			}
 			return g.JWTKey, nil
 		})
 
 		if err != nil {
 			switch {
-			case errors.Is(err, ErrTokenExpired):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_expired", "message": "Token 已过期"})
-			case errors.Is(err, ErrTokenNotValidYet):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_not_active", "message": "Token 尚未激活"})
-			case errors.Is(err, ErrTokenMalformed):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_malformed", "message": "Token 格式不正确"})
-			case errors.Is(err, ErrInvalidKey):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_key", "message": "无效的签名密钥"})
-			case errors.Is(err, ErrInvalidKeyType):
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_key_type", "message": "签名密钥类型错误"})
+			case errors.Is(err, jwt.ErrTokenExpired):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeTokenExpired, "message": "Token 已过期"})
+			case errors.Is(err, jwt.ErrTokenNotValidYet):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeTokenNotActive, "message": "Token 尚未激活"})
+			case errors.Is(err, jwt.ErrTokenMalformed):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeTokenMalformed, "message": "Token 格式不正确"})
+			case errors.Is(err, jwt.ErrInvalidKey):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeInvalidKey, "message": "无效的签名密钥"})
+			case errors.Is(err, jwt.ErrInvalidKeyType):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeInvalidKeyType, "message": "签名密钥类型错误"})
 			default:
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_invalid", "message": "Token 无效: " + err.Error()})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": ErrorCodeTokenInvalid, "message": "Token 无效: " + err.Error()})
 			}
 			c.Abort()
 			return
@@ -268,7 +294,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 
 		if !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error":   "token_invalid",
+				"error":   ErrorCodeTokenInvalid,
 				"message": "无效的 Token",
 			})
 			c.Abort()
@@ -351,14 +377,14 @@ func (g *GinJWT) ParseJWT(tokenStr string) (Claims, error) {
 		claimsType = claimsType.Elem()
 	}
 	if claimsType.Kind() != reflect.Struct {
-		return nil, errors.New("claims must be a struct or pointer to struct")
+		return nil, ErrClaimsInvalid
 	}
 
 	claims := g.claimsFactory()
 
 	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 		if t.Method != g.SigningMethod {
-			return nil, errors.New("unexpected signing method")
+			return nil, ErrSigningMethod
 		}
 		return g.JWTKey, nil
 	})
@@ -366,9 +392,10 @@ func (g *GinJWT) ParseJWT(tokenStr string) (Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !token.Valid {
-		return nil, errors.New("invalid token")
-	}
+	// if !token.Valid {
+	// 	return nil, ErrTokenInvalid
+	// }
+	_ = token
 	return claims, nil
 }
 
