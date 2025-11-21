@@ -148,6 +148,13 @@ func newLogger(config LoggerConfig) (*zap.Logger, error) {
 	}
 
 	logger := zap.New(core, options...)
+	if len(cfg.Fields) > 0 {
+		var fields []Field
+		for k, v := range cfg.Fields {
+			fields = append(fields, zap.String(k, v))
+		}
+		logger = logger.WithOptions(zap.Fields(fields...))
+	}
 
 	return logger, nil
 }
