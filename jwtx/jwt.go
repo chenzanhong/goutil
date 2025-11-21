@@ -100,22 +100,38 @@ type ClaimStrings = jwt.ClaimStrings
 
 // GinJWT holds configuration for JWT operations.
 type GinJWT struct {
-	JWTKey        []byte
-	SigningMethod SigningMethod
-	Claims        Claims        // Prototype for reflection; must be a pointer to a struct type.
-	AutoInject    bool          // If true, automatically inject claim fields into gin.Context. Default: false.
+	jwtKey        []byte
+	signingMethod SigningMethod
+	claims        Claims        // Prototype for reflection; must be a pointer to a struct type.
+	autoInject    bool          // If true, automatically inject claim fields into gin.Context. Default: false.
 	claimsFactory func() Claims // Factory function to create new claims instance.
 }
 
-// defaultGJWT is the package-level default instance.
+// defaultGinJWT is the package-level default instance.
 // It is protected by a mutex to allow safe configuration before use.
 var (
-	defaultGJWT *GinJWT
-	defaultInit sync.Once // ensure SetDefault* can only be called before first use
+	defaultGinJWT *GinJWT
+	defaultInit   sync.Once // ensure SetDefault* can only be called before first use
 )
 
 func NewNumericDate(t time.Time) *NumericDate {
 	return jwt.NewNumericDate(t)
+}
+
+func GetSigningMethod() SigningMethod {
+	return mustDefault().GetSigningMethod()
+}
+
+func (g *GinJWT) GetSigningMethod() SigningMethod {
+	return g.signingMethod
+}
+
+func GetAutoInject() bool {
+	return mustDefault().GetAutoInject()
+}
+
+func (g *GinJWT) GetAutoInject() bool {
+	return g.autoInject
 }
 
 type Option func(*GinJWT)
@@ -125,7 +141,7 @@ func WithSigningMethod(method SigningMethod) Option {
 		if method == nil {
 			panic("jwtx: WithSigningMethod: method cannot be nil")
 		}
-		g.SigningMethod = method
+		g.signingMethod = method
 	}
 }
 
@@ -144,7 +160,7 @@ func buildClaimsFactory(claims Claims) func() Claims {
 
 func WithAutoInject(enabled bool) Option {
 	return func(g *GinJWT) {
-		g.AutoInject = enabled
+		g.autoInject = enabled
 	}
 }
 
@@ -157,7 +173,7 @@ func Init(key string, method SigningMethod, claims Claims, opts ...Option) {
 		panic(err)
 	}
 	defaultInit.Do(func() {
-		defaultGJWT = g
+		defaultGinJWT = g
 	})
 }
 
@@ -168,10 +184,10 @@ func InitWithHS256(key string, claims Claims, opts ...Option) {
 }
 
 func mustDefault() *GinJWT {
-	if defaultGJWT == nil {
+	if defaultGinJWT == nil {
 		panic("jwtx: default instance not initialized; call jwtx.Init(key, claims) first")
 	}
-	return defaultGJWT
+	return defaultGinJWT
 }
 
 // NewGinJWT creates a new GinJWT instance.
@@ -181,20 +197,20 @@ func NewGinJWT(key string, method SigningMethod, claims Claims, opts ...Option) 
 		return nil, ErrInvalidKey
 	}
 	// 生产环境应该检查key长度是否符合要求
-	// if strings.HasPrefix(defaultGJWT.SigningMethod.Alg(), "HS") {
-	// 	minLen := map[string]int{"HS256": 32, "HS384": 48, "HS512": 64}[defaultGJWT.SigningMethod.Alg()]
-	// 	if minLen > 0 && len(defaultGJWT.JWTKey) < minLen {
-	// 		panic(fmt.Sprintf("jwtx: %s key must be at least %d bytes", defaultGJWT.SigningMethod.Alg(), minLen))
+	// if strings.HasPrefix(defaultGinJWT.SigningMethod.Alg(), "HS") {
+	// 	minLen := map[string]int{"HS256": 32, "HS384": 48, "HS512": 64}[defaultGinJWT.SigningMethod.Alg()]
+	// 	if minLen > 0 && len(defaultGinJWT.JWTKey) < minLen {
+	// 		panic(fmt.Sprintf("jwtx: %s key must be at least %d bytes", defaultGinJWT.SigningMethod.Alg(), minLen))
 	// 	}
 	// }
 	if claims == nil {
 		return nil, ErrClaimsInvalid
 	}
 	g := &GinJWT{
-		JWTKey:        []byte(key),
-		Claims:        claims,
-		SigningMethod: method,
-		AutoInject:    false,
+		jwtKey:        []byte(key),
+		claims:        claims,
+		signingMethod: method,
+		autoInject:    false,
 	}
 	g.claimsFactory = buildClaimsFactory(claims)
 
@@ -221,8 +237,8 @@ func ParseJWT(tokenStr string) (Claims, error) {
 
 // SignToken generates a signed JWT string from the given claims.
 func (g *GinJWT) SignToken(claims Claims) (string, error) {
-	token := jwt.NewWithClaims(g.SigningMethod, claims)
-	return token.SignedString(g.JWTKey)
+	token := jwt.NewWithClaims(g.signingMethod, claims)
+	return token.SignedString(g.jwtKey)
 }
 
 // GinJWTAuthMiddleware returns a Gin middleware that validates JWT tokens.
@@ -252,7 +268,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 		tokenStr := authHeader[len(bearerPrefix):]
 
 		// Create a new instance of the claims type via reflection.
-		claimsType := reflect.TypeOf(g.Claims)
+		claimsType := reflect.TypeOf(g.claims)
 		if claimsType.Kind() == reflect.Ptr {
 			claimsType = claimsType.Elem()
 		}
@@ -267,10 +283,10 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 
 		claims := g.claimsFactory()
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			if t.Method != g.SigningMethod {
+			if t.Method != g.signingMethod {
 				return nil, ErrSigningMethod
 			}
-			return g.JWTKey, nil
+			return g.jwtKey, nil
 		})
 
 		if err != nil {
@@ -301,7 +317,7 @@ func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if g.AutoInject {
+		if g.autoInject {
 			injectClaimsToContext(c, claims)
 		}
 
@@ -372,7 +388,7 @@ func injectClaimsToContext(c *gin.Context, claims Claims) {
 // ParseJWT parses a raw JWT string and returns the claims.
 // Useful for non-middleware scenarios (e.g., WebSocket auth).
 func (g *GinJWT) ParseJWT(tokenStr string) (Claims, error) {
-	claimsType := reflect.TypeOf(g.Claims)
+	claimsType := reflect.TypeOf(g.claims)
 	if claimsType.Kind() == reflect.Ptr {
 		claimsType = claimsType.Elem()
 	}
@@ -383,10 +399,10 @@ func (g *GinJWT) ParseJWT(tokenStr string) (Claims, error) {
 	claims := g.claimsFactory()
 
 	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-		if t.Method != g.SigningMethod {
+		if t.Method != g.signingMethod {
 			return nil, ErrSigningMethod
 		}
-		return g.JWTKey, nil
+		return g.jwtKey, nil
 	})
 
 	if err != nil {
