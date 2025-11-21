@@ -1,3 +1,4 @@
+// Package jwtx provides JWT utilities integrated with Gin.
 package jwtx
 
 import (
@@ -5,202 +6,352 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// 默认配置 ----------------------------------------------
+type SigningMethod = jwt.SigningMethod
+
+// Signing methods aliases to avoid importing jwt package directly.
 var (
-	defaultJWTKey        = []byte(defaultKey)
-	defaultSigningMethod = jwt.SigningMethodHS256
+	SigningMethodNone  SigningMethod = jwt.SigningMethodNone
+	SigningMethodHS256 SigningMethod = jwt.SigningMethodHS256
+	SigningMethodHS384 SigningMethod = jwt.SigningMethodHS384
+	SigningMethodHS512 SigningMethod = jwt.SigningMethodHS512
+	SigningMethodRS256 SigningMethod = jwt.SigningMethodRS256
+	SigningMethodRS384 SigningMethod = jwt.SigningMethodRS384
+	SigningMethodRS512 SigningMethod = jwt.SigningMethodRS512
+	SigningMethodES256 SigningMethod = jwt.SigningMethodES256
+	SigningMethodES384 SigningMethod = jwt.SigningMethodES384
+	SigningMethodES512 SigningMethod = jwt.SigningMethodES512
+	SigningMethodPS256 SigningMethod = jwt.SigningMethodPS256 // RSASSA-PSS
+	SigningMethodPS384 SigningMethod = jwt.SigningMethodPS384
+	SigningMethodPS512 SigningMethod = jwt.SigningMethodPS512
 )
 
-const defaultKey = "0123456789abcdef"
+type ErrorType = error
 
-func GetDefaultSigningMethod() jwt.SigningMethod {
-	return defaultSigningMethod
-}
+var (
+	ErrTokenExpired     ErrorType = jwt.ErrTokenExpired
+	ErrTokenNotValidYet ErrorType = jwt.ErrTokenNotValidYet
+	ErrTokenMalformed   ErrorType = jwt.ErrTokenMalformed
+	ErrInvalidKey       ErrorType = jwt.ErrInvalidKey
+	ErrInvalidKeyType   ErrorType = jwt.ErrInvalidKeyType
+)
 
-/*
-Claims 示例结构体，原型。
-推荐用户自定义Claims。如：
+// Claims is an example claims structure.
+// Users should define their own claims with RegisteredClaims embedded.
+//
+// Example:
+//
+//	type MyClaims struct {
+//	    UserID   uint   `json:"user_id"     inject:"user_id"`
+//	    Username string `json:"username"`                     // will use "username" as context key
+//	    Role     string                                           // no tag → uses field name "Role"
+//	    jwtx.RegisteredClaims
+//	}
+//
+// Then generate a token:
+//
+//	claims := &MyClaims{
+//	    UserID: 123,
+//	    Username: "alice",
+//	    Role: "admin",
+//	    RegisteredClaims: jwtx.RegisteredClaims{
+//	        ExpiresAt: jwtx.NewNumericDate(time.Now().Add(24 * time.Hour)),
+//	        IssuedAt:  jwtx.NewNumericDate(time.Now()),
+//	        Issuer:    "myapp",
+//	    },
+//	}
+//	token, err := jwtUtil.SignToken(claims)
+type Claims = jwt.Claims
+type RegisteredClaims = jwt.RegisteredClaims
+type NumericDate = jwt.NumericDate
+type ClaimStrings = jwt.ClaimStrings
 
-	claims := &model.MyClaims{
-		UserID:   123,
-		Username: "username",
-		Role:     "admin",
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(time.Hour * 24).Unix(), // 24小时有效期
-			IssuedAt:  time.Now().Unix(),
-			Issuer:    "myapp",
-		},
-	}
-
-然后使用 SignToken 生成 token
-
-	token, err := jwtUtil.SignToken(claims)
-
-注意：有 jwt:"set"（默认以字段名为key）或 jwt:"set=custom_key"（以custom_key为key）的字段
-才会 c.Set(key any, value any)
-*/
-type Claims struct {
-	UserName string `json:"username" jwt:"set"`
-	// …… 其他自定义字段
-	jwt.StandardClaims
-}
-
-// GinJWT 结构体，支持自定义Claims、JWTKey 和 method ----------------------------------------------
+// GinJWT holds configuration for JWT operations.
 type GinJWT struct {
 	JWTKey        []byte
-	SigningMethod jwt.SigningMethod
-	Claims        jwt.Claims // 用户可以自定义Claims
-	// Claims 是一个 claims 原型，用于反射创建新实例。
-	// 它本身不存储任何运行时数据，不应被直接修改。
+	SigningMethod SigningMethod
+	Claims        Claims        // Prototype for reflection; must be a pointer to a struct type.
+	AutoInject    bool          // If true, automatically inject claim fields into gin.Context. Default: false.
+	claimsFactory func() Claims // Factory function to create new claims instance.
 }
 
-/*  用户完全可以自己定义
-type MyClaims struct {
-    UserID   uint   `json:"user_id" jwt:"set=user_id"`
-    Role     string `json:"role" jwt:"set"`
-    jwt.StandardClaims
+// defaultGJWT is the package-level default instance.
+// It is protected by a mutex to allow safe configuration before use.
+var (
+	defaultGJWT *GinJWT
+	defaultInit sync.Once // ensure SetDefault* can only be called before first use
+)
+
+func NewNumericDate(t time.Time) *NumericDate {
+	return jwt.NewNumericDate(t)
 }
 
-jwtUtil := goutil.NewGinJWT("secret", jwt.SigningMethodHS256, MyClaims{})
-*/
+type Option func(*GinJWT)
 
-// newGinJWTWithClaims 创建一个新的GinJWT实例（内部使用）
-func newGinJWTWithClaims(key []byte, method jwt.SigningMethod, claims jwt.Claims) *GinJWT {
-	return &GinJWT{
-		JWTKey:        key,
-		SigningMethod: method,
-		Claims:        claims,
+func WithSigningMethod(method SigningMethod) Option {
+	return func(g *GinJWT) {
+		if method == nil {
+			panic("jwtx: WithSigningMethod: method cannot be nil")
+		}
+		g.SigningMethod = method
 	}
 }
 
-// NewGinJWT 创建一个新的GinJWT实例
-func NewGinJWT(key string, method jwt.SigningMethod, claims jwt.Claims) *GinJWT {
-	return newGinJWTWithClaims([]byte(key), method, claims)
+func buildClaimsFactory(claims Claims) func() Claims {
+	claimsType := reflect.TypeOf(claims)
+	if claimsType.Kind() == reflect.Ptr {
+		claimsType = claimsType.Elem()
+	}
+	if claimsType.Kind() != reflect.Struct {
+		panic("jwtx: WithClaims: claims must be a pointer to a struct type")
+	}
+	return func() Claims {
+		return reflect.New(claimsType).Interface().(Claims)
+	}
 }
 
-// NewDefaultGinJWT 创建一个使用默认配置的新GinJWT实例
-func NewDefaultGinJWT() *GinJWT {
-	return newGinJWTWithClaims(defaultJWTKey, defaultSigningMethod, &Claims{})
+func WithAutoInject(enabled bool) Option {
+	return func(g *GinJWT) {
+		g.AutoInject = enabled
+	}
 }
 
-// SignToken
-func (g *GinJWT) SignToken(claims jwt.Claims) (string, error) {
-
-	// 创建token对象
-	token := jwt.NewWithClaims(g.SigningMethod, claims)
-
-	// 使用密钥签名token
-	tokenString, err := token.SignedString(g.JWTKey)
+// Init initializes the default GinJWT instance.
+// Use SigningMethodHS256 as default.
+// It should be called before any other jwtx function.
+func Init(key string, method SigningMethod, claims Claims, opts ...Option) {
+	g, err := NewGinJWT(key, method, claims, opts...)
 	if err != nil {
-		return "", err
+		panic(err)
 	}
-
-	return tokenString, nil
+	defaultInit.Do(func() {
+		defaultGJWT = g
+	})
 }
 
+func mustDefault() *GinJWT {
+	if defaultGJWT == nil {
+		panic("jwtx: default instance not initialized; call jwtx.Init(key, claims) first")
+	}
+	return defaultGJWT
+}
+
+// NewGinJWT creates a new GinJWT instance.
+// The claims parameter should be a pointer to a zero-value struct (e.g., &MyClaims{}).
+func NewGinJWT(key string, method SigningMethod, claims Claims, opts ...Option) (*GinJWT, error) {
+	if key == "" {
+		return nil, errors.New("key cannot be empty")
+	}
+	// 生产环境应该检查key长度是否符合要求
+	// if strings.HasPrefix(defaultGJWT.SigningMethod.Alg(), "HS") {
+	// 	minLen := map[string]int{"HS256": 32, "HS384": 48, "HS512": 64}[defaultGJWT.SigningMethod.Alg()]
+	// 	if minLen > 0 && len(defaultGJWT.JWTKey) < minLen {
+	// 		panic(fmt.Sprintf("jwtx: %s key must be at least %d bytes", defaultGJWT.SigningMethod.Alg(), minLen))
+	// 	}
+	// }
+	if claims == nil {
+		return nil, errors.New("claims cannot be nil")
+	}
+	g := &GinJWT{
+		JWTKey:        []byte(key),
+		Claims:        claims,
+		SigningMethod: method,
+		AutoInject:    false,
+	}
+	g.claimsFactory = buildClaimsFactory(claims)
+
+	// 应用用户选项
+	for _, opt := range opts {
+		opt(g)
+	}
+	return g, nil
+}
+
+// SignToken signs the given claims using the default configuration.
+func SignToken(claims Claims) (string, error) {
+	return mustDefault().SignToken(claims)
+}
+
+func GinJWTAuthMiddleware() gin.HandlerFunc {
+	return mustDefault().GinJWTAuthMiddleware()
+}
+
+// ParseJWT parses a token string using the default configuration.
+func ParseJWT(tokenStr string) (Claims, error) {
+	return mustDefault().ParseJWT(tokenStr)
+}
+
+// SignToken generates a signed JWT string from the given claims.
+func (g *GinJWT) SignToken(claims Claims) (string, error) {
+	token := jwt.NewWithClaims(g.SigningMethod, claims)
+	return token.SignedString(g.JWTKey)
+}
+
+// GinJWTAuthMiddleware returns a Gin middleware that validates JWT tokens.
+// If AutoInject is enabled, it injects public claim fields into the context.
 func (g *GinJWT) GinJWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenStr := c.GetHeader("Authorization")
-		if tokenStr == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing_token", "message": "请求头中缺少Token"})
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":   "missing_token",
+				"message": "请求头中缺少 Token",
+			})
 			c.Abort()
 			return
 		}
 
-		// 处理 Bearer 前缀
 		const bearerPrefix = "Bearer "
-		if !strings.HasPrefix(tokenStr, bearerPrefix) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token_format", "message": "Token格式错误，缺少Bearer前缀"})
+		if !strings.HasPrefix(authHeader, bearerPrefix) {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":   "invalid_token_format",
+				"message": "Token 格式错误，缺少 Bearer 前缀",
+			})
 			c.Abort()
 			return
 		}
-		tokenStr = tokenStr[len(bearerPrefix):] // 去掉前缀
 
-		// 使用反射创建g.Claims类型的新实例
-		claims := reflect.New(reflect.TypeOf(g.Claims).Elem()).Interface().(jwt.Claims)
+		tokenStr := authHeader[len(bearerPrefix):]
 
-		token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-			// 关键安全检查：验证签名算法是否符合预期
-			if token.Method != g.SigningMethod {
+		// Create a new instance of the claims type via reflection.
+		claimsType := reflect.TypeOf(g.Claims)
+		if claimsType.Kind() == reflect.Ptr {
+			claimsType = claimsType.Elem()
+		}
+		if claimsType.Kind() != reflect.Struct {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "internal_error",
+				"message": "Claims must be a struct or pointer to struct",
+			})
+			c.Abort()
+			return
+		}
+
+		claims := g.claimsFactory()
+		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+			if t.Method != g.SigningMethod {
 				return nil, errors.New("unexpected signing method")
 			}
 			return g.JWTKey, nil
 		})
 
-		// 详细错误处理
 		if err != nil {
-			var ve *jwt.ValidationError
-			if errors.As(err, &ve) {
-				switch ve.Errors {
-				case jwt.ValidationErrorExpired:
-					c.JSON(http.StatusUnauthorized, gin.H{"error": "token_expired", "message": "Token已过期"})
-				case jwt.ValidationErrorNotValidYet:
-					c.JSON(http.StatusUnauthorized, gin.H{"error": "token_not_active", "message": "Token尚未激活"})
-				case jwt.ValidationErrorMalformed:
-					c.JSON(http.StatusUnauthorized, gin.H{"error": "token_malformed", "message": "Token格式不正确"})
-				default:
-					c.JSON(http.StatusUnauthorized, gin.H{"error": "token_invalid", "message": "Token无效: " + err.Error()})
-				}
-			} else {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "parse_error", "message": "Token解析失败: " + err.Error()})
+			switch {
+			case errors.Is(err, ErrTokenExpired):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_expired", "message": "Token 已过期"})
+			case errors.Is(err, ErrTokenNotValidYet):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_not_active", "message": "Token 尚未激活"})
+			case errors.Is(err, ErrTokenMalformed):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_malformed", "message": "Token 格式不正确"})
+			case errors.Is(err, ErrInvalidKey):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_key", "message": "无效的签名密钥"})
+			case errors.Is(err, ErrInvalidKeyType):
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_key_type", "message": "签名密钥类型错误"})
+			default:
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token_invalid", "message": "Token 无效: " + err.Error()})
 			}
 			c.Abort()
 			return
 		}
 
 		if !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "token_invalid", "message": "无效的Token"})
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error":   "token_invalid",
+				"message": "无效的 Token",
+			})
 			c.Abort()
 			return
 		}
 
-		extractClaimsToContext(c, claims)
+		if g.AutoInject {
+			injectClaimsToContext(c, claims)
+		}
+
+		// Also store full claims in context for advanced usage.
+		c.Set("jwt_claims", claims)
+
 		c.Next()
 	}
 }
 
-// extractClaimsToContext 将 claims 中带有 jwt:"set" tag 的字段注入到 gin.Context
-func extractClaimsToContext(c *gin.Context, claims jwt.Claims) {
-	val := reflect.ValueOf(claims).Elem()
-	typ := val.Type()
+// injectClaimsToContext injects selected fields from claims into gin.Context.
+// Priority for key name:
+// 1. `inject:"custom_key"`
+// 2. `json:"key"` (ignoring options like `,omitempty`)
+// 3. Field name (e.g., "Role")
+// Embedded fields (like RegisteredClaims) are skipped.
+func injectClaimsToContext(c *gin.Context, claims Claims) {
+	val := reflect.ValueOf(claims)
+	if val.Kind() == reflect.Ptr {
+		val = val.Elem()
+	}
+	if !val.IsValid() || val.Kind() != reflect.Struct {
+		return
+	}
 
+	typ := val.Type()
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
 
-		// 跳过非导出字段
+		// Skip unexported fields
 		if !field.CanInterface() {
 			continue
 		}
 
-		// 检查是否有jwt:"set" 或 jwt:"set=custom_key"
-		jwtTag := fieldType.Tag.Get("jwt")
-		if !strings.HasPrefix(jwtTag, "set") {
+		// Skip embedded RegisteredClaims or other anonymous structs
+		if fieldType.Anonymous {
 			continue
 		}
 
 		var key string
-		if i := strings.Index(jwtTag, "="); i > 0 {
-			key = jwtTag[i+1:]
+
+		// 1. Try `inject` tag
+		if injectTag := fieldType.Tag.Get("inject"); injectTag != "" {
+			key = injectTag
+		} else if jsonTag := fieldType.Tag.Get("json"); jsonTag != "" {
+			// 2. Parse `json` tag (handle "name,omitempty")
+			if idx := strings.Index(jsonTag, ","); idx != -1 {
+				key = jsonTag[:idx]
+			} else {
+				key = jsonTag
+			}
+			// Skip if json:"-"
+			if key == "-" {
+				continue
+			}
 		} else {
+			// 3. Fallback to field name
 			key = fieldType.Name
 		}
 
-		c.Set(key, field.Interface())
+		if key != "" {
+			c.Set(key, field.Interface())
+		}
 	}
 }
 
-// ParseJWT 使用GinJWT解析JWT令牌
-func (g *GinJWT) ParseJWT(tokenStr string) (jwt.Claims, error) {
-	claims := reflect.New(reflect.TypeOf(g.Claims).Elem()).Interface().(jwt.Claims)
+// ParseJWT parses a raw JWT string and returns the claims.
+// Useful for non-middleware scenarios (e.g., WebSocket auth).
+func (g *GinJWT) ParseJWT(tokenStr string) (Claims, error) {
+	claimsType := reflect.TypeOf(g.Claims)
+	if claimsType.Kind() == reflect.Ptr {
+		claimsType = claimsType.Elem()
+	}
+	if claimsType.Kind() != reflect.Struct {
+		return nil, errors.New("claims must be a struct or pointer to struct")
+	}
 
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-		if token.Method != g.SigningMethod {
+	claims := g.claimsFactory()
+
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if t.Method != g.SigningMethod {
 			return nil, errors.New("unexpected signing method")
 		}
 		return g.JWTKey, nil
@@ -209,80 +360,56 @@ func (g *GinJWT) ParseJWT(tokenStr string) (jwt.Claims, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	if !token.Valid {
 		return nil, errors.New("invalid token")
 	}
-
 	return claims, nil
 }
 
 /*
-	使用示例：
-	1、自定义Claims结构体
-	type MyClaims struct {
-		UserID   uint   `json:"user_id" jwt:"set=user_id"`     // 会自动 c.Set("user_id", value)
-		Username string `json:"username" jwt:"set=username"`   // 会自动 c.Set("username", value)
-		Role     string `json:"role" jwt:"set"`                // 会自动 c.Set("Role", value) 。用字段名做key
-		jwt.StandardClaims
+	使用示例1，使用全局默认GinJWT
+type MyClaims struct {
+	UserID   uint   `json:"user_id" inject:"user_id"`
+	Username string `json:"username"`
+	Role     string
+	jwtx.RegisteredClaims
+}
+
+func main() {
+	claims := &MyClaims{}
+	jwtx.Init(
+		"my-32-byte-long-secret-key-1234567890ab",
+		jwtx.SigningMethodHS256, // ← 必须传！
+		claims,
+		jwtx.WithAutoInject(true),
+	)
+
+	r := gin.Default()
+	r.Use(jwtx.GinJWTAuthMiddleware())
+	// ...
+}
+*/
+
+/*
+	使用示例2，自定义GinJWT
+type MyClaims struct {
+	UserID   uint   `json:"user_id" inject:"user_id"`
+	Username string `json:"username"`
+	Role     string
+	jwtx.RegisteredClaims
+}
+
+func main() {
+	claims := &MyClaims{}
+	gjwt, err := jwtx.NewGinJWT("my-32-byte-long-secret-key-1234567890ab", jwt.SigningMethodHS256, claims)
+	if err != nil {
+		panic(err)
 	}
+	gjwt.AutoInject = true
 
-	2. 初始化 JWT 工具
-	var jwtUtil *goutil.GinJWT
-	func init() {
-		// 创建 JWT 工具，传入原型（注意：是 &model.MyClaims{}，不是实例数据）
-		jwtUtil = goutil.NewGinJWT(
-			"your-very-secret-key-32bytes-min!", // 建议至少 32 字节
-			goutil.GetDefaultSigningMethod(),    // 或直接用 jwt.SigningMethodHS256
-			&model.MyClaims{},                   // 传入结构体指针作为原型
-		)
-	}
+	r := gin.Default()
+	r.Use(gjwt.GinJWTAuthMiddleware())
+	// ...
+}
 
-	3. 登录接口 LoginHandler ：生成 Token
-	// 创建 claims 实例（包含动态数据）
-    claims := &model.MyClaims{
-        UserID:   123,
-        Username: req.Username,
-        Role:     "admin",
-        StandardClaims: jwt.StandardClaims{
-            ExpiresAt: time.Now().Add(time.Hour * 24).Unix(), // 24小时有效期
-            IssuedAt:  time.Now().Unix(),
-            Issuer:    "myapp",
-        },
-    }
-
-    // 使用 SignToken 生成 token
-    token, err := jwtUtil.SignToken(claims)
-
-	4. 受保护的接口：使用中间件
-	func ProfileHandler(c *gin.Context) {
-		//  中间件已自动将 claims 中标记 jwt:"set" 的字段注入到 Context
-		userID := c.GetUint("user_id")      // 来自 jwt:"set=user_id"
-		username := c.GetString("username") // 来自 jwt:"set=username"
-		role := c.GetString("Role")         // 来自 jwt:"set"
-
-		c.JSON(http.StatusOK, gin.H{
-			"user_id":  userID,
-			"username": username,
-			"role":     role,
-		})
-	}
-
-	5. 路由设置
-	// main.go
-	func main() {
-		r := gin.Default()
-
-		// 公共路由
-		r.POST("/login", LoginHandler)
-
-		// 受保护的路由
-		protected := r.Group("/api")
-		protected.Use(jwtUtil.GinJWTAuthMiddleware()) // 使用中间件
-		{
-			protected.GET("/profile", ProfileHandler)
-		}
-
-		r.Run(":8080")
-	}
 */

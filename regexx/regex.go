@@ -7,6 +7,7 @@ func IsValidEmail(email string) bool {
 	return emailRegex.MatchString(email)
 }
 
-func IsValidPhone(phone string) {
-
+func IsValidPhone(phone string) bool {
+	phoneRegex := regexp.MustCompile(`^1[3-9]\d{9}$`)
+	return phoneRegex.MatchString(phone)
 }

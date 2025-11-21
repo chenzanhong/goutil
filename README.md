@@ -193,6 +193,84 @@ if err != nil {
 
 ---
 
+### SSH 连接池工具
+
+提供SSH连接池管理功能，有效复用SSH连接，减少连接建立开销。
+
+- 连接复用，提高性能
+- 自动健康检查和连接有效性验证
+- 支持自动重连机制
+- 连接池状态监控和统计
+- 线程安全设计
+
+#### 使用示例
+
+```go
+// 创建SSH客户端配置
+config := &ssh.ClientConfig{
+    User: "youruser",
+    Auth: []ssh.AuthMethod{
+        ssh.Password("yourpassword"),
+    },
+    HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 注意：生产环境应使用安全的 HostKey 验证
+}
+
+// 创建连接池
+pool := sshpool.New(
+    sshpool.WithCapacity(10),        // 设置连接池容量
+    sshpool.WithTimeout(15*time.Minute), // 设置连接超时时间
+)
+
+// 添加连接到池中
+client, err := ssh.Dial("tcp", "192.168.1.10:22", config)
+if err != nil {
+    log.Fatal(err)
+}
+err = pool.Add("server1", client)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 从池中获取连接
+client, err = pool.Get("server1")
+if err != nil {
+    log.Fatal(err)
+}
+// 使用连接执行操作
+session, err := client.NewSession()
+if err != nil {
+    log.Fatal(err)
+}
+output, err := session.CombinedOutput("ls -l")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(string(output))
+session.Close()
+
+// 使用带自动重连的获取方式
+client, err = pool.GetWithReconnect("server1", config)
+if err != nil {
+    log.Fatal(err)
+}
+
+// 查看连接池统计信息
+stats := pool.Stats()
+fmt.Printf("连接池状态 - 活跃连接: %d, 容量: %d, 总请求数: %d\n", 
+    stats.ActiveConnections, stats.Capacity, stats.TotalRequests)
+
+// 启动后台清理 goroutine
+stop := make(chan struct{})
+go pool.Cleanup(stop)
+// 在程序结束时关闭
+defer close(stop)
+
+// 关闭连接池
+defer pool.Close()
+```
+
+---
+
 ### 高性能日志工具
 
 基于Uber的zap日志库，提供高性能、结构化的日志记录功能。
