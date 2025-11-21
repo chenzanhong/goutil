@@ -135,6 +135,12 @@ func Init(key string, method SigningMethod, claims Claims, opts ...Option) {
 	})
 }
 
+// InitWithHS256 initializes the default instance using HS256.
+// This is a convenience function for common use cases.
+func InitWithHS256(key string, claims Claims, opts ...Option) {
+	Init(key, SigningMethodHS256, claims, opts...)
+}
+
 func mustDefault() *GinJWT {
 	if defaultGJWT == nil {
 		panic("jwtx: default instance not initialized; call jwtx.Init(key, claims) first")
